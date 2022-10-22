@@ -47,7 +47,7 @@ def cubic_subproblem_solver(g, A, H, tolerance=1e-8):
     
     assert g.ndim == 1
     assert A.ndim == 2 and A.shape[0] == A.shape[1]
-    assert np.allclose(A, A.T)
+    # assert np.allclose(A, A.T), f'A and A.T maximum difference is {np.max(np.abs(A - A.T))}'
     assert H > 0
     
     # convert to the basis where A is diagonazable
