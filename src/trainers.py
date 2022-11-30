@@ -13,11 +13,12 @@ from cubic_subproblem_solver import cubic_subproblem_solver
 
 class Trainer(ABC):
     
-    def __init__(self, model, dataset, criterion, model_dir):
+    def __init__(self, model, dataset, criterion, weight_decay, model_dir):
         
         self.model = model
         self.dataset = dataset
         self.criterion = criterion
+        self.weight_decay = weight_decay
         
         self.MODEL_DIR = model_dir
         self.iter = 0
@@ -82,8 +83,9 @@ class Trainer(ABC):
     
     def evaluate(self, X, y):
         with torch.no_grad():
+            l2_reg = 0. if (self.weight_decay == 0) else (self.weight_decay/2) * sum([p.data.pow(2).sum() for p in self.model.parameters()]).item()
             preds = self.model(X)
-            loss = self.criterion(preds, y)
+            loss = self.criterion(preds, y) + l2_reg
             if preds.shape[1] > 1:
                 # categorical cross entropy loss
                 preds = torch.argmax(preds, axis=1)
@@ -99,8 +101,8 @@ class Trainer(ABC):
         loss = self.criterion(preds, y)
         self.model.zero_grad()
         loss.backward()
-        grad_norm = sum([p.grad.pow(2).sum().item() for p in self.model.parameters()])
-        return grad_norm
+        grad_norm_squared = sum([(p.grad + self.weight_decay * p.data).pow(2).sum() for p in self.model.parameters()])
+        return grad_norm_squared.item()
     
     def calculate_hessian(self, X, y):
         
@@ -121,6 +123,9 @@ class Trainer(ABC):
 
         hessians = torch.cat(hessians, axis=0)
 
+        if self.weight_decay > 0:
+            hessians += self.weight_decay * torch.eye(hessians.shape[0])
+
         return hessians
     
     def params_dist(self, another_model_params):
@@ -131,8 +136,7 @@ class Trainer(ABC):
         train_loss, train_acc = self.evaluate(self.dataset["train_data"], self.dataset["train_targets"])
         test_loss, test_acc = self.evaluate(self.dataset["test_data"], self.dataset["test_targets"])
         
-        grad_norm = math.sqrt(self.calculate_grad_norm_squared(
-            self.dataset["train_data"], self.dataset["train_targets"]))
+        grad_norm = math.sqrt(self.calculate_grad_norm_squared(self.dataset["train_data"], self.dataset["train_targets"]))
         
         step_size = None if self.iter == 0 else self.params_dist(self.prev_params)
         dist_from_start = self.params_dist(self.init_params)
@@ -207,12 +211,11 @@ class Trainer(ABC):
         return self.metrics.copy(), self.hessian_metrics.copy()
 
 
-
 class AdaptiveGDTrainer(Trainer):
     
-    def __init__(self, model, dataset, criterion, model_dir, L_0, L_min):
+    def __init__(self, model, dataset, criterion, weight_decay, model_dir, L_0, L_min):
         
-        super().__init__(model, dataset, criterion, model_dir)
+        super().__init__(model, dataset, criterion, weight_decay, model_dir)
         self.L = L_0
         self.L_min = L_min
         self.metrics["L"] = []
@@ -249,8 +252,9 @@ time = {self.metrics["time"][iter_id]:>7.2f} sec', end='')
     
     def calculate_loss(self, another_model, X, y):
         with torch.no_grad():
+            l2_reg = 0. if (self.weight_decay == 0) else (self.weight_decay/2) * sum([p.data.pow(2).sum() for p in another_model.parameters()]).item()
             preds = another_model(X)
-            loss = self.criterion(preds, y)
+            loss = self.criterion(preds, y) + l2_reg
         return loss.item()
     
     def set_params(self, another_model, new_params):
@@ -271,7 +275,13 @@ time = {self.metrics["time"][iter_id]:>7.2f} sec', end='')
             self.model.zero_grad()
             loss = self.criterion(outputs, self.dataset["train_targets"])
             loss.backward()
+            if self.weight_decay != 0:
+                l2_reg = (self.weight_decay/2) * sum([p.data.pow(2).sum() for p in self.model.parameters()])
+                loss += l2_reg
+                for p in self.model.parameters():
+                    p.grad += self.weight_decay * p.data
             grad_norm_squared = sum([p.grad.pow(2).sum().item() for p in self.model.parameters()])
+
             model_next = copy.deepcopy(self.model)
             new_params = [p.data - 1/self.L * p.grad for p in self.model.parameters()]
             self.set_params(model_next, new_params)
@@ -301,12 +311,11 @@ time = {self.metrics["time"][iter_id]:>7.2f} sec', end='')
                 start_time = time.perf_counter()
 
 
-
 class AdaptiveCubicNewtonTrainer(Trainer):
     
-    def __init__(self, model, dataset, criterion, model_dir, M_0, M_min):
+    def __init__(self, model, dataset, criterion, weight_decay, model_dir, M_0, M_min):
         
-        super().__init__(model, dataset, criterion, model_dir)
+        super().__init__(model, dataset, criterion, weight_decay, model_dir)
         self.M = M_0
         self.M_min = M_min
         self.metrics["M"] = []
@@ -331,7 +340,8 @@ class AdaptiveCubicNewtonTrainer(Trainer):
         self.metrics["M"].append(self.M)
     
     def update_hessian_metrics(self, save_spectrum_every, save_hessian_every):
-        super().update_hessian_metrics(save_spectrum_every, save_hessian_every, self.hessian.clone())
+        hess = self.hessian.clone()
+        super().update_hessian_metrics(save_spectrum_every, save_hessian_every, hess)
     
     def print_training_stats(self, iteration):
         try:
@@ -350,14 +360,17 @@ time = {self.metrics["time"][iter_id]:>7.2f} sec', end='')
     
     def calculate_loss(self, another_model, X, y):
         with torch.no_grad():
+            l2_reg = 0. if (self.weight_decay == 0) else (self.weight_decay/2) * sum([p.data.pow(2).sum() for p in another_model.parameters()]).item()
             preds = another_model(X)
-            loss = self.criterion(preds, y)
+            loss = self.criterion(preds, y) + l2_reg
         return loss.item()
     
     def calculate_gradient(self, X, y):
         preds = self.model(X)
         loss = self.criterion(preds, y)
-        gradients = torch.autograd.grad(loss, self.model.parameters())
+        self.model.zero_grad()
+        loss.backward()
+        gradients = [(p.grad + self.weight_decay * p.data) for p in self.model.parameters()]
         grad = torch.cat([g.flatten() for g in gradients], dim=0)
         return grad
     
@@ -419,12 +432,12 @@ time = {self.metrics["time"][iter_id]:>7.2f} sec', end='')
                 start_time = time.perf_counter()
 
 
-
 class CustomTrainer(Trainer):
     
-    def __init__(self, model, dataset, criterion, model_dir, OptimizerClass, optimizer_params, batch_size):
+    def __init__(self, model, dataset, criterion, weight_decay, model_dir, OptimizerClass, optimizer_params, batch_size):
         
-        super().__init__(model, dataset, criterion, model_dir)
+        super().__init__(model, dataset, criterion, weight_decay, model_dir)
+        optimizer_params["weight_decay"] = weight_decay
         self.optimizer = OptimizerClass(self.model.parameters(), **optimizer_params)
         self.batch_start = None
         self.batch_size = batch_size
@@ -508,7 +521,6 @@ test loss = {self.metrics["test_loss"][iter_id]:>9.6f}, time = {self.metrics["ti
                 total_time += time.perf_counter() - start_time
                 self.save()
                 start_time = time.perf_counter()
-
 
 
 def print_training_stats(trainer, print_every=1):

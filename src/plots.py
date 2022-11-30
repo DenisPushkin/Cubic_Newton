@@ -197,7 +197,7 @@ def plot_grad_norms(metrics_list, labels_list):
     plt.show()
 
 
-def plot_max_min_eigvals(metrics_list, labels_list, plot_min_eigval=True):
+def plot_max_min_eigvals(metrics_list, labels_list, plot_min_eigval=True, yscale=None):
     fig, axes = plt.subplots(1,2, figsize=(12,6))
 
     ax = axes[0]
@@ -205,6 +205,8 @@ def plot_max_min_eigvals(metrics_list, labels_list, plot_min_eigval=True):
         ax.plot(metrics["iter"], metrics["lambda_1"], label=label)
     ax.set_xlabel("Iteration")
     ax.set_ylabel("Max Eigenvalue")
+    if yscale is not None:
+        ax.set_yscale(yscale)
     ax.legend()
 
     if plot_min_eigval:
@@ -220,7 +222,7 @@ def plot_max_min_eigvals(metrics_list, labels_list, plot_min_eigval=True):
     plt.show()
 
 
-def plot_distances(metrics_list, labels_list, plot_min_eigval=True):
+def plot_distances(metrics_list, labels_list, plot_min_eigval=True, yscale=None):
     fig, axes = plt.subplots(1,2, figsize=(12,6))
 
     ax = axes[0]
@@ -228,6 +230,8 @@ def plot_distances(metrics_list, labels_list, plot_min_eigval=True):
         ax.plot(metrics["iter"], metrics["dist_from_start"], label=label)
     ax.set_xlabel("Iteration")
     ax.set_ylabel("Distance from start")
+    if yscale is not None:
+        ax.set_yscale(yscale)
     ax.legend()
 
     ax = axes[1]
