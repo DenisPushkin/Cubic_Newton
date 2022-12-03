@@ -22,7 +22,6 @@ class Trainer(ABC):
         
         self.MODEL_DIR = model_dir
         self.iter = 0
-        self.init_params = None # parameters of the model at the start of the training
         self.prev_params = None # parameters at the previous step
         
         self.metrics = {
@@ -32,7 +31,7 @@ class Trainer(ABC):
             "test_acc": [],
             "grad_norm": [],
             "step_size": [],
-            "dist_from_start": [],
+            "params_norm": [],
             "time": [],
             "iter": [],
         }
@@ -50,13 +49,11 @@ class Trainer(ABC):
     def get_metadata(self):
         return {
             "iter": self.iter,
-            "init_params": self.init_params,
             "prev_params": self.prev_params,
         }
     
     def update_metadata(self, new_metadata):
         self.iter = new_metadata["iter"]
-        self.init_params = new_metadata["init_params"]
         self.prev_params = new_metadata["prev_params"]
     
     def save(self):
@@ -128,8 +125,11 @@ class Trainer(ABC):
 
         return hessians
     
+    def params_norm(self):
+        return math.sqrt(sum([p.data.pow(2).sum().item() for p in self.model.parameters()]))
+    
     def params_dist(self, another_model_params):
-        return math.sqrt(sum([(p - p_another).pow(2).sum() for p, p_another in 
+        return math.sqrt(sum([(p.data - p_another_data).pow(2).sum().item() for p, p_another_data in 
                               zip(self.model.parameters(), another_model_params)]))
     
     def update_metrics(self, training_time):
@@ -139,7 +139,7 @@ class Trainer(ABC):
         grad_norm = math.sqrt(self.calculate_grad_norm_squared(self.dataset["train_data"], self.dataset["train_targets"]))
         
         step_size = None if self.iter == 0 else self.params_dist(self.prev_params)
-        dist_from_start = self.params_dist(self.init_params)
+        params_norm = self.params_norm()
         
         self.metrics["train_loss"].append(train_loss)
         self.metrics["test_loss"].append(test_loss)
@@ -147,7 +147,7 @@ class Trainer(ABC):
         self.metrics["test_acc"].append(test_acc)
         self.metrics["grad_norm"].append(grad_norm)
         self.metrics["step_size"].append(step_size)
-        self.metrics["dist_from_start"].append(dist_from_start)
+        self.metrics["params_norm"].append(params_norm)
         self.metrics["time"].append(training_time)
         self.metrics["iter"].append(self.iter)
         
@@ -177,7 +177,6 @@ class Trainer(ABC):
     
     def prepare_training(self, eval_every, eval_hessian_every, save_spectrum_every, save_hessian_every):
         # calculate metrics for initial model state
-        self.init_params = [p.data.clone() for p in self.model.parameters()]
         if eval_every is not None:
             self.update_metrics(training_time=0.0)
         if eval_hessian_every is not None:
