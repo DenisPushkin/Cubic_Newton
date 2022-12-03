@@ -213,12 +213,13 @@ class Trainer(ABC):
 
 class AdaptiveGDTrainer(Trainer):
     
-    def __init__(self, model, dataset, criterion, weight_decay, model_dir, L_0, L_min):
+    def __init__(self, model, dataset, criterion, weight_decay, model_dir, L_0, L_min, numerical_tolerance=1e-8):
         
         super().__init__(model, dataset, criterion, weight_decay, model_dir)
         self.L = L_0
         self.L_min = L_min
         self.metrics["L"] = []
+        self.numerical_tolerance = numerical_tolerance
     
     def get_metadata(self):
         metadata = super().get_metadata()
@@ -286,7 +287,7 @@ time = {self.metrics["time"][iter_id]:>7.2f} sec', end='')
             new_params = [p.data - 1/self.L * p.grad for p in self.model.parameters()]
             self.set_params(model_next, new_params)
             while (self.calculate_loss(model_next, self.dataset["train_data"], self.dataset["train_targets"]) > 
-                    loss.item() - 1/(2*self.L) * grad_norm_squared):
+                    loss.item() - 1/(2*self.L) * grad_norm_squared - self.numerical_tolerance):
                 self.L *= 2
                 new_params = [p.data - 1/self.L * p.grad for p in self.model.parameters()]
                 self.set_params(model_next, new_params)
@@ -313,12 +314,13 @@ time = {self.metrics["time"][iter_id]:>7.2f} sec', end='')
 
 class AdaptiveCubicNewtonTrainer(Trainer):
     
-    def __init__(self, model, dataset, criterion, weight_decay, model_dir, M_0, M_min):
+    def __init__(self, model, dataset, criterion, weight_decay, model_dir, M_0, M_min, numerical_tolerance=1e-8):
         
         super().__init__(model, dataset, criterion, weight_decay, model_dir)
         self.M = M_0
         self.M_min = M_min
         self.metrics["M"] = []
+        self.numerical_tolerance = numerical_tolerance
         
         # placeholder
         self.hessian = None
@@ -404,7 +406,7 @@ time = {self.metrics["time"][iter_id]:>7.2f} sec', end='')
             self.update_model_params(model_next, h)
 
             while (self.calculate_loss(model_next, self.dataset["train_data"], self.dataset["train_targets"]) > 
-                self.quadratic_form(loss, grad, hess, self.M, h)):
+                self.quadratic_form(loss, grad, hess, self.M, h) - self.numerical_tolerance):
                 self.M *= 2
                 h = torch.tensor(cubic_subproblem_solver(grad.numpy(), hess.numpy(), self.M))
                 for p, p_next in zip(self.model.parameters(), model_next.parameters()):
