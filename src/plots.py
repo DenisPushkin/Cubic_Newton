@@ -139,6 +139,18 @@ def plot_psd_ness(trainer_):
     plt.show()
 
 
+def print_negative_psdness(trainer_):
+    iters, psd_ness = get_psd_ness(trainer_)
+    for i, psd in zip(iters, psd_ness):
+        if psd < 0:
+            iter_id = trainer_.metrics["iter"].index(i)
+            hess_iter_id = trainer_.hessian_metrics["iter"].index(i-1) # cause we computer lambda_n after previous step
+            lambda_n = trainer_.hessian_metrics["lambda_n"][hess_iter_id]
+            M = trainer_.metrics["M"][iter_id]
+            r = trainer_.metrics["step_size"][iter_id]
+            print(f"iter = {iter_id}: lambda_n = {lambda_n}, M = {M}, r = {r}, lambda_n + M*r/2 = {psd}")
+
+
 def plot_losses(metrics_list, labels_list, min_train_loss=0., min_test_loss=0.):
     fig, axes = plt.subplots(1,2, figsize=(12,6))
 
@@ -227,9 +239,9 @@ def plot_distances(metrics_list, labels_list, plot_min_eigval=True, yscale=None)
 
     ax = axes[0]
     for metrics, label in zip(metrics_list, labels_list):
-        ax.plot(metrics["iter"], metrics["dist_from_start"], label=label)
+        ax.plot(metrics["iter"], metrics["params_norm"], label=label)
     ax.set_xlabel("Iteration")
-    ax.set_ylabel("Distance from start")
+    ax.set_ylabel("L2-norm of the parameters")
     if yscale is not None:
         ax.set_yscale(yscale)
     ax.legend()

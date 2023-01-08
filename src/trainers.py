@@ -13,12 +13,12 @@ from cubic_subproblem_solver import cubic_subproblem_solver
 
 class Trainer(ABC):
     
-    def __init__(self, model, dataset, criterion, weight_decay, model_dir):
+    def __init__(self, model, dataset, criterion, model_dir, **kwargs):
         
         self.model = model
         self.dataset = dataset
         self.criterion = criterion
-        self.weight_decay = weight_decay
+        self.weight_decay = kwargs["weight_decay"] if "weight_decay" in kwargs.keys() else 0.
         
         self.MODEL_DIR = model_dir
         self.iter = 0
@@ -103,7 +103,7 @@ class Trainer(ABC):
     
     def calculate_hessian(self, X, y):
         
-        names = list(n for n, _ in self.model.named_parameters())
+        names = list(n for n, _ in self.model.named_parameters())                
         hessians = hessian(lambda *params: self.criterion(_stateless.functional_call(self.model, {n: p for n, p in zip(names, params)}, X), y), tuple(self.model.parameters()))
         
         hessians = list(hessians)
@@ -156,7 +156,7 @@ class Trainer(ABC):
     def update_hessian_metrics(self, save_spectrum_every, save_hessian_every, hessian=None):
         if hessian is None:
             hessian = self.calculate_hessian(self.dataset["train_data"], self.dataset["train_targets"])
-        hessian = hessian.numpy()
+        hessian = hessian.cpu().numpy()
 
         spectrum = np.linalg.eigvalsh(hessian)
         self.hessian_metrics["lambda_1"].append(spectrum[-1])
@@ -212,13 +212,14 @@ class Trainer(ABC):
 
 class AdaptiveGDTrainer(Trainer):
     
-    def __init__(self, model, dataset, criterion, weight_decay, model_dir, L_0, L_min, numerical_tolerance=1e-8):
+    def __init__(self, model, dataset, criterion, model_dir, L_0, L_min, **kwargs):
         
-        super().__init__(model, dataset, criterion, weight_decay, model_dir)
+        super().__init__(model, dataset, criterion, model_dir, **kwargs)
         self.L = L_0
         self.L_min = L_min
         self.metrics["L"] = []
-        self.numerical_tolerance = numerical_tolerance
+        self.numerical_tolerance = kwargs["numerical_tolerance"] if "numerical_tolerance" in kwargs.keys() else 1e-4
+        self.min_step_size = kwargs["min_step_size"] if "min_step_size" in kwargs.keys() else 1e-6
     
     def get_metadata(self):
         metadata = super().get_metadata()
@@ -285,11 +286,20 @@ time = {self.metrics["time"][iter_id]:>7.2f} sec', end='')
             model_next = copy.deepcopy(self.model)
             new_params = [p.data - 1/self.L * p.grad for p in self.model.parameters()]
             self.set_params(model_next, new_params)
-            while (self.calculate_loss(model_next, self.dataset["train_data"], self.dataset["train_targets"]) > 
-                    loss.item() - 1/(2*self.L) * grad_norm_squared - self.numerical_tolerance):
+            
+            while (self.calculate_loss(model_next, self.dataset["train_data"], self.dataset["train_targets"]) >
+                   loss.item() - 1/(2*self.L) * grad_norm_squared + self.numerical_tolerance):
                 self.L *= 2
                 new_params = [p.data - 1/self.L * p.grad for p in self.model.parameters()]
                 self.set_params(model_next, new_params)
+            
+            if self.params_dist([p_next.data for p_next in model_next.parameters()]) < self.min_step_size:
+                print("cannot improve anymore")
+                if (save_every is not None):
+                    total_time += time.perf_counter() - start_time
+                    self.save()
+                    start_time = time.perf_counter()
+                return
             
             self.set_params(self.model, new_params)
             self.iter += 1
@@ -313,13 +323,14 @@ time = {self.metrics["time"][iter_id]:>7.2f} sec', end='')
 
 class AdaptiveCubicNewtonTrainer(Trainer):
     
-    def __init__(self, model, dataset, criterion, weight_decay, model_dir, M_0, M_min, numerical_tolerance=1e-8):
+    def __init__(self, model, dataset, criterion, model_dir, M_0, M_min, **kwargs):
         
-        super().__init__(model, dataset, criterion, weight_decay, model_dir)
+        super().__init__(model, dataset, criterion, model_dir, **kwargs)
         self.M = M_0
         self.M_min = M_min
         self.metrics["M"] = []
-        self.numerical_tolerance = numerical_tolerance
+        self.numerical_tolerance = kwargs["numerical_tolerance"] if "numerical_tolerance" in kwargs.keys() else 1e-6
+        self.min_step_size = kwargs["min_step_size"] if "min_step_size" in kwargs.keys() else 1e-6
         
         # placeholder
         self.hessian = None
@@ -390,6 +401,7 @@ time = {self.metrics["time"][iter_id]:>7.2f} sec', end='')
     
     def perform_training_loop(self, max_iters, print_every, eval_every, eval_hessian_every, save_spectrum_every,
                               save_hessian_every, save_every):
+        device = self.dataset["train_data"].device
         total_time = self.metrics["time"][-1]
         start_time = time.perf_counter()
         while self.iter < max_iters:
@@ -400,18 +412,42 @@ time = {self.metrics["time"][iter_id]:>7.2f} sec', end='')
             loss = self.calculate_loss(self.model, self.dataset["train_data"], self.dataset["train_targets"])
             grad = self.calculate_gradient(self.dataset["train_data"], self.dataset["train_targets"])
             hess = self.hessian
-            h = torch.tensor(cubic_subproblem_solver(grad.numpy(), hess.numpy(), self.M))
+            
+            h = torch.tensor(cubic_subproblem_solver(grad.cpu().numpy(), hess.cpu().numpy(), self.M)).to(device)
             model_next = copy.deepcopy(self.model)
             self.update_model_params(model_next, h)
-
-            while (self.calculate_loss(model_next, self.dataset["train_data"], self.dataset["train_targets"]) > 
-                self.quadratic_form(loss, grad, hess, self.M, h) - self.numerical_tolerance):
+            
+            #while (self.calculate_loss(model_next, self.dataset["train_data"], self.dataset["train_targets"]) > 
+            #    self.quadratic_form(loss, grad, hess, self.M, h) + self.numerical_tolerance or
+            #    self.calculate_loss(model_next, self.dataset["train_data"], self.dataset["train_targets"]) > loss +
+            #    2/3 * (self.quadratic_form(loss, grad, hess, self.M, h) - loss) + 1e-8): #TODO: hard const
+            while (self.calculate_loss(model_next, self.dataset["train_data"], self.dataset["train_targets"]) >
+                   loss - self.M/12 * self.params_dist([p_next.data for p_next in model_next.parameters()])**3 +
+                   self.numerical_tolerance):
                 self.M *= 2
-                h = torch.tensor(cubic_subproblem_solver(grad.numpy(), hess.numpy(), self.M))
+                h = torch.tensor(cubic_subproblem_solver(grad.cpu().numpy(), hess.cpu().numpy(), self.M)).to(device)
                 for p, p_next in zip(self.model.parameters(), model_next.parameters()):
                     p_next.data = p.data.clone()
                 self.update_model_params(model_next, h)
-
+            
+            if self.params_dist([p_next.data for p_next in model_next.parameters()]) < self.min_step_size:
+                print("cannot improve anymore")
+                if (save_every is not None):
+                    total_time += time.perf_counter() - start_time
+                    self.save()
+                    start_time = time.perf_counter()
+                return
+            
+            """
+            if self.params_dist([p_next.data for p_next in model_next.parameters()]) < self.min_step_size:
+                old_numerical_tolerance = self.numerical_tolerance
+                self.numerical_tolerance *= 2
+                print(f"numerical_tolerance changed: {old_numerical_tolerance} -> {self.numerical_tolerance}")
+            else:
+                if self.numerical_tolerance != 1e-6:
+                    self.numerical_tolerance = 1e-6 # TODO: avoid hard constants
+            """
+                    
             self.update_model_params(self.model, h)
             self.hessian = self.calculate_hessian(self.dataset["train_data"], self.dataset["train_targets"])
             self.iter += 1
@@ -435,10 +471,11 @@ time = {self.metrics["time"][iter_id]:>7.2f} sec', end='')
 
 class CustomTrainer(Trainer):
     
-    def __init__(self, model, dataset, criterion, weight_decay, model_dir, OptimizerClass, optimizer_params, batch_size):
+    def __init__(self, model, dataset, criterion, model_dir, OptimizerClass, optimizer_params, batch_size, **kwargs):
         
-        super().__init__(model, dataset, criterion, weight_decay, model_dir)
-        optimizer_params["weight_decay"] = weight_decay
+        super().__init__(model, dataset, criterion, model_dir, **kwargs)
+        if self.weight_decay != 0.:
+            optimizer_params["weight_decay"] = self.weight_decay
         self.optimizer = OptimizerClass(self.model.parameters(), **optimizer_params)
         self.batch_start = None
         self.batch_size = batch_size

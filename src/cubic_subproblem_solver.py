@@ -1,4 +1,5 @@
 import numpy as np
+import torch
 from itertools import product
 
 def cubic_subproblem_simple_solver(g, A, H, l=-5.0, r=5.0, tol=1e-1):
@@ -36,23 +37,30 @@ def cubic_subproblem_simple_solver(g, A, H, l=-5.0, r=5.0, tol=1e-1):
 def cubic_subproblem_solver(g, A, H, tolerance=1e-8):
     """
     Finding the exact solution
-    g: np.array, gradient
-    A: np.array, Hessian
+    g: np.array or torch.tensor, gradient
+    A: np.array or torch.tensor, Hessian
     H: float, Lipschitz constant
     tolerance: float, tolerance for the error in solution norm
     
     Returns
-    y: np.array, solution of the Cubic subproblem
+    y: np.array or torch.tensor, solution of the Cubic subproblem
     """
     
-    assert g.ndim == 1
-    assert A.ndim == 2 and A.shape[0] == A.shape[1]
+    # assert g.ndim == 1
+    # assert A.ndim == 2 and A.shape[0] == A.shape[1]
     # assert np.allclose(A, A.T), f'A and A.T maximum difference is {np.max(np.abs(A - A.T))}'
-    assert H > 0
+    # assert H > 0
+    
+    if type(g) == torch.tensor:
+        lib = torch
+    elif type(g) == np.ndarray:
+        lib = np
+    else:
+        raise "Unsupported type of inputs: must be torch.tensor or numpy.array"
     
     # convert to the basis where A is diagonazable
-    lambdas, U = np.linalg.eigh(A) # it returns eigenvalues in ascending order, but we want in descending
-    U = np.flip(U, axis=1)
+    lambdas, U = lib.linalg.eigh(A) # it returns eigenvalues in ascending order, but we want in descending
+    U = lib.flip(U, axis=1)
     lambdas = lambdas[::-1]
     g_hat = U.T @ g
     
@@ -60,28 +68,28 @@ def cubic_subproblem_solver(g, A, H, tolerance=1e-8):
         # check division by 0
         zero_denom = (lambdas + H*r/2 == 0)
         if any(g_hat[zero_denom]):
-            res = - np.inf
+            res = - lib.inf
         else:
-            res = r**2 - np.sum(np.square(g_hat[~zero_denom] / (lambdas[~zero_denom] + H*r/2)))
+            res = r**2 - lib.sum(lib.square(g_hat[~zero_denom] / (lambdas[~zero_denom] + H*r/2)))
         return res
     
     left_endpoint = 2 / H * max(-lambdas[-1], 0)
-    if (f(left_endpoint) > 0):
+    if f(left_endpoint) > 0:
         # degenerate case
         r = left_endpoint
         n = lambdas.size # space dim
         k = n-1
         while (k-1 >= 0 and lambdas[k-1] == lambdas[-1]):
             k -= 1
-        h = np.zeros(g_hat.size)
+        h = lib.zeros(g_hat.size)
         h[:k] = - g_hat[:k] / (lambdas[:k] + H*r/2)
-        h[-1] = np.sqrt(r**2 - np.dot(h,h))
+        h[-1] = lib.sqrt(r**2 - lib.dot(h,h))
     else:
         # non-degenerate case
         # finding left and right endpoints
         step = 1
         right_endpoint = left_endpoint + step
-        while (f(right_endpoint) < 0):
+        while f(right_endpoint) < 0:
             step *= 2
             right_endpoint = left_endpoint + step
         left_endpoint = right_endpoint - step
