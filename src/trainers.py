@@ -156,9 +156,8 @@ class Trainer(ABC):
     def update_hessian_metrics(self, save_spectrum_every, save_hessian_every, hessian=None):
         if hessian is None:
             hessian = self.calculate_hessian(self.dataset["train_data"], self.dataset["train_targets"])
-        hessian = hessian.cpu().numpy()
 
-        spectrum = np.linalg.eigvalsh(hessian)
+        spectrum = torch.linalg.eigvalsh(hessian)
         self.hessian_metrics["lambda_1"].append(spectrum[-1])
         self.hessian_metrics["lambda_n"].append(spectrum[0])
         self.hessian_metrics["iter"].append(self.iter)
@@ -401,7 +400,6 @@ time = {self.metrics["time"][iter_id]:>7.2f} sec', end='')
     
     def perform_training_loop(self, max_iters, print_every, eval_every, eval_hessian_every, save_spectrum_every,
                               save_hessian_every, save_every):
-        device = self.dataset["train_data"].device
         total_time = self.metrics["time"][-1]
         start_time = time.perf_counter()
         while self.iter < max_iters:
@@ -413,19 +411,15 @@ time = {self.metrics["time"][iter_id]:>7.2f} sec', end='')
             grad = self.calculate_gradient(self.dataset["train_data"], self.dataset["train_targets"])
             hess = self.hessian
             
-            h = torch.tensor(cubic_subproblem_solver(grad.cpu().numpy(), hess.cpu().numpy(), self.M)).to(device)
+            h = cubic_subproblem_solver(grad, hess, self.M)
             model_next = copy.deepcopy(self.model)
             self.update_model_params(model_next, h)
             
-            #while (self.calculate_loss(model_next, self.dataset["train_data"], self.dataset["train_targets"]) > 
-            #    self.quadratic_form(loss, grad, hess, self.M, h) + self.numerical_tolerance or
-            #    self.calculate_loss(model_next, self.dataset["train_data"], self.dataset["train_targets"]) > loss +
-            #    2/3 * (self.quadratic_form(loss, grad, hess, self.M, h) - loss) + 1e-8): #TODO: hard const
             while (self.calculate_loss(model_next, self.dataset["train_data"], self.dataset["train_targets"]) >
                    loss - self.M/12 * self.params_dist([p_next.data for p_next in model_next.parameters()])**3 +
                    self.numerical_tolerance):
                 self.M *= 2
-                h = torch.tensor(cubic_subproblem_solver(grad.cpu().numpy(), hess.cpu().numpy(), self.M)).to(device)
+                h = cubic_subproblem_solver(grad, hess, self.M)
                 for p, p_next in zip(self.model.parameters(), model_next.parameters()):
                     p_next.data = p.data.clone()
                 self.update_model_params(model_next, h)
@@ -437,16 +431,6 @@ time = {self.metrics["time"][iter_id]:>7.2f} sec', end='')
                     self.save()
                     start_time = time.perf_counter()
                 return
-            
-            """
-            if self.params_dist([p_next.data for p_next in model_next.parameters()]) < self.min_step_size:
-                old_numerical_tolerance = self.numerical_tolerance
-                self.numerical_tolerance *= 2
-                print(f"numerical_tolerance changed: {old_numerical_tolerance} -> {self.numerical_tolerance}")
-            else:
-                if self.numerical_tolerance != 1e-6:
-                    self.numerical_tolerance = 1e-6 # TODO: avoid hard constants
-            """
                     
             self.update_model_params(self.model, h)
             self.hessian = self.calculate_hessian(self.dataset["train_data"], self.dataset["train_targets"])
@@ -572,7 +556,7 @@ def print_training_stats(trainer, print_every=1):
 def get_metrics(trainer):
     metrics = {}
     for key, value in trainer.metrics.items():
-        metrics[key] = np.array(value.copy())
+        metrics[key] = np.array(value.copy())            
     return metrics
 
 

@@ -51,17 +51,22 @@ def cubic_subproblem_solver(g, A, H, tolerance=1e-8):
     # assert np.allclose(A, A.T), f'A and A.T maximum difference is {np.max(np.abs(A - A.T))}'
     # assert H > 0
     
-    if type(g) == torch.tensor:
+    if type(g) == torch.Tensor:
         lib = torch
     elif type(g) == np.ndarray:
         lib = np
     else:
-        raise "Unsupported type of inputs: must be torch.tensor or numpy.array"
+        raise TypeError("Unsupported type of inputs: must be torch.Tensor or numpy.array")
     
     # convert to the basis where A is diagonazable
     lambdas, U = lib.linalg.eigh(A) # it returns eigenvalues in ascending order, but we want in descending
-    U = lib.flip(U, axis=1)
+    """
+    if lib is torch:
+        U = lib.flip(U, dims=(1,))
+    else:
+        U = lib.flip(U, axis=1)
     lambdas = lambdas[::-1]
+    """
     g_hat = U.T @ g
     
     def f(r):
@@ -73,17 +78,17 @@ def cubic_subproblem_solver(g, A, H, tolerance=1e-8):
             res = r**2 - lib.sum(lib.square(g_hat[~zero_denom] / (lambdas[~zero_denom] + H*r/2)))
         return res
     
-    left_endpoint = 2 / H * max(-lambdas[-1], 0)
+    left_endpoint = 2 / H * max(-lambdas[0], 0)
     if f(left_endpoint) > 0:
         # degenerate case
         r = left_endpoint
         n = lambdas.size # space dim
-        k = n-1
-        while (k-1 >= 0 and lambdas[k-1] == lambdas[-1]):
-            k -= 1
+        k = 0
+        while (k+1 <= n-1 and lambdas[k+1] == lambdas[0]):
+            k += 1
         h = lib.zeros(g_hat.size)
-        h[:k] = - g_hat[:k] / (lambdas[:k] + H*r/2)
-        h[-1] = lib.sqrt(r**2 - lib.dot(h,h))
+        h[k+1:] = - g_hat[k+1:] / (lambdas[k+1:] + H*r/2)
+        h[0] = lib.sqrt(r**2 - lib.dot(h,h))
     else:
         # non-degenerate case
         # finding left and right endpoints
